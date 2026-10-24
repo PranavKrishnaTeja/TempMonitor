@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager build output
+.build/
+.swiftpm/
+
+# Built app bundle (build it locally, see README)
+*.app/
+
+# Editor settings
+.vscode/
+.idea/
