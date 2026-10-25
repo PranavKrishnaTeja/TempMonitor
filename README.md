@@ -50,6 +50,7 @@ TempMonitor/
     ├── Sensors.swift
     └── … (the other .swift files)
 ```
+The app icon is `Icon/AppIcon.icns`. To change it, edit `Icon/make_icon.swift` and run `swift Icon/make_icon.swift`.
 
 ### 3. Build
 ```bash
@@ -61,8 +62,9 @@ The first build takes a minute or two and ends with `Build complete!`. To try th
 This wraps the program in a `TempMonitor.app` bundle that lives only in the menu bar, with no Dock icon:
 ```bash
 rm -rf TempMonitor.app
-mkdir -p TempMonitor.app/Contents/MacOS
+mkdir -p TempMonitor.app/Contents/MacOS TempMonitor.app/Contents/Resources
 cp .build/release/TempMonitor TempMonitor.app/Contents/MacOS/
+cp Icon/AppIcon.icns TempMonitor.app/Contents/Resources/
 cat > TempMonitor.app/Contents/Info.plist <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -70,6 +72,7 @@ cat > TempMonitor.app/Contents/Info.plist <<'EOF'
   <key>CFBundleName</key><string>TempMonitor</string>
   <key>CFBundleExecutable</key><string>TempMonitor</string>
   <key>CFBundleIdentifier</key><string>local.tempmonitor</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
 EOF
