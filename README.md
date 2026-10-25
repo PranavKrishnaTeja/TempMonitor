@@ -40,15 +40,22 @@ Put the `TempMonitor` folder somewhere, e.g. your Desktop, and go into it:
 ```bash
 cd ~/Desktop/TempMonitor
 ```
-The folder must look like this. The `.swift` files have to be inside `Sources/TempMonitor/`, or the build fails:
+The folder must look like this. The app's code has to be inside `Sources/TempMonitor/`, or the build fails:
 ```
 TempMonitor/
 ├── Package.swift
 ├── README.md
-└── Sources/TempMonitor/
-    ├── TempMonitorApp.swift
-    ├── Sensors.swift
-    └── … (the other .swift files)
+├── Icon/                  app icon and the script that draws it
+├── scripts/test.sh        runs the tests
+├── Sources/TempMonitor/
+│   ├── App/               app entry point and MonitorStore (polls the sensors)
+│   ├── Hardware/          sensor, SMC, power, CPU/memory and battery readers
+│   ├── History/           7-day history storage and chart downsampling
+│   ├── Model/             components, metrics and formatting
+│   ├── Persistence/       JSON files in Application Support
+│   ├── Stress/            stress test, load generator and reports
+│   └── Views/             the SwiftUI screens
+└── Tests/TempMonitorTests/
 ```
 The app icon is `Icon/AppIcon.icns`. To change it, edit `Icon/make_icon.swift` and run `swift Icon/make_icon.swift`.
 
@@ -103,9 +110,16 @@ defaults delete local.tempmonitor                  # deletes settings (°C/°F, 
 ```
 Also remove it from Login Items if you added it.
 
+## Running the tests
+```bash
+./scripts/test.sh              # run all tests
+./scripts/test.sh --coverage   # also print line coverage per file
+```
+Use the script rather than plain `swift test`. With only the Command Line Tools installed (no Xcode), `swift test` can't find the Swift Testing framework, and the script adds its location. Most tests use fakes and sample data. A few read this Mac's real sensors, and two briefly run the stress load, so the fans may spin up for a few seconds. Tests never touch your saved history or reports.
+
 ## Troubleshooting
 - **`xcrun: error: invalid active developer path`**: the developer tools aren't installed. Do step 1.
-- **Build error about `Sources/TempMonitor`** (e.g. "could not find source files"): the `.swift` files aren't in `Sources/TempMonitor/`. Move them there (see step 2).
+- **Build error about `Sources/TempMonitor`** (e.g. "could not find source files"): the code isn't in `Sources/TempMonitor/`. Move it there (see step 2).
 - **"TempMonitor can't be opened" / "Apple could not verify…"**: this happens when the app was copied from another Mac or downloaded, so macOS quarantines it. Don't run a copy you got from someone else; build it yourself on this Mac from the source (steps 3–5). Only if it's a copy you built yourself on another Mac can you clear the flag with `xattr -dr com.apple.quarantine /Applications/TempMonitor.app`.
 - **Nothing appears in the menu bar**: on a crowded menu bar (especially on notched MacBooks), icons can be hidden behind the notch. Quit some other menu bar apps, or hold ⌘ and drag icons to make room. Check that it's running with `pgrep -l TempMonitor`.
 - **"No sensors found" or a missing section**: the private Apple interfaces this app relies on may have changed in your macOS version, or your chip may use different sensor names (see Notes).

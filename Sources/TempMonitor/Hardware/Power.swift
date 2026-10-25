@@ -24,13 +24,26 @@ private func IOReportChannelGetUnitLabel(_ channel: CFDictionary) -> Unmanaged<C
 @_silgen_name("IOReportSimpleGetIntegerValue")
 private func IOReportSimpleGetIntegerValue(_ channel: CFDictionary, _ a: Int32) -> Int64
 
-struct PowerReading {
+struct PowerReading: Equatable {
     var cpu: Double = 0
     var gpu: Double = 0
     var ane: Double = 0
     var dram: Double = 0
     /// Whole-machine draw from the SMC, if available.
     var system: Double?
+
+    /// The whole-machine draw, or CPU + GPU when the SMC doesn't report it.
+    var bestSystemEstimate: Double { system ?? cpu + gpu }
+
+    /// Adds an IOReport energy channel's average watts to the component it belongs to.
+    /// M2+ report "CPU Energy"/"GPU Energy"; M1-family report per-cluster totals
+    /// ("EACC_CPU", "PACC0_CPU") and "GPU0". Per-core channels ("PACC0_CPU0") are ignored.
+    mutating func add(channel name: String, watts: Double) {
+        if name == "GPU Energy" || name.wholeMatch(of: #/GPU\d*/#) != nil { gpu += watts }
+        else if name.hasSuffix("CPU Energy") || name.wholeMatch(of: #/[EP]ACC\d*_CPU/#) != nil { cpu += watts }
+        else if name.hasPrefix("ANE") { ane += watts }
+        else if name.hasPrefix("DRAM") { dram += watts }
+    }
 }
 
 /// Computes component power from IOReport "Energy Model" energy counters between successive calls.
@@ -50,7 +63,7 @@ final class PowerReader {
     }
 
     /// Returns average watts since the previous call (nil on the first call).
-    func read(smc: SMC?) -> PowerReading? {
+    func read(smc: SMCKeyReading?) -> PowerReading? {
         guard let current = IOReportCreateSamples(subscription, channels, nil)?.takeRetainedValue() else { return nil }
         let now = Date()
         defer { previous = (current, now) }
@@ -63,25 +76,21 @@ final class PowerReader {
         for channel in items {
             guard let name = IOReportChannelGetChannelName(channel)?.takeUnretainedValue() as String? else { continue }
             let unit = IOReportChannelGetUnitLabel(channel)?.takeUnretainedValue() as String? ?? "mJ"
-            let joules = Double(IOReportSimpleGetIntegerValue(channel, 0)) / Self.divisor(for: unit)
-            let watts = joules / seconds
-
-            // M2+ report "CPU Energy"/"GPU Energy"; M1-family report per-cluster totals
-            // ("EACC_CPU", "PACC0_CPU") and "GPU0". Per-core channels ("PACC0_CPU0") are skipped.
-            if name == "GPU Energy" || name.wholeMatch(of: #/GPU\d*/#) != nil { reading.gpu += watts }
-            else if name.hasSuffix("CPU Energy") || name.wholeMatch(of: #/[EP]ACC\d*_CPU/#) != nil { reading.cpu += watts }
-            else if name.hasPrefix("ANE") { reading.ane += watts }
-            else if name.hasPrefix("DRAM") { reading.dram += watts }
+            let joules = Self.joules(IOReportSimpleGetIntegerValue(channel, 0), unit: unit)
+            reading.add(channel: name, watts: joules / seconds)
         }
         if let pstr = smc?.read("PSTR"), pstr > 0 { reading.system = pstr }
         return reading
     }
 
-    private static func divisor(for unit: String) -> Double {
+    /// Converts an energy counter in `unit` ("nJ", "uJ", "mJ"; unknown units are treated as mJ) to joules.
+    static func joules(_ value: Int64, unit: String) -> Double {
+        let perJoule: Double
         switch unit.trimmingCharacters(in: .whitespaces) {
-        case "nJ": return 1e9
-        case "uJ", "µJ": return 1e6
-        default: return 1e3
+        case "nJ": perJoule = 1e9
+        case "uJ", "µJ": perJoule = 1e6
+        default: perJoule = 1e3
         }
+        return Double(value) / perJoule
     }
 }

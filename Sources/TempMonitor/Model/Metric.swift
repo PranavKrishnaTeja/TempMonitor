@@ -5,12 +5,12 @@ enum MetricUnit {
 
     /// Converts a stored value to what charts plot (only temperature depends on °C/°F).
     func display(_ v: Double, fahrenheit: Bool) -> Double {
-        self == .temperature ? toDisplay(v, fahrenheit: fahrenheit) : v
+        self == .temperature ? Temperature.display(v, fahrenheit: fahrenheit) : v
     }
 
-    func format(_ v: Double, fahrenheit: Bool) -> String {
+    func format(_ v: Double, fahrenheit: Bool = false) -> String {
         switch self {
-        case .temperature: return formatTemp(v, fahrenheit: fahrenheit)
+        case .temperature: return Temperature.format(v, fahrenheit: fahrenheit)
         case .rpm: return v < 1 ? "Off" : String(format: "%.0f rpm", v)
         case .watts: return String(format: abs(v) < 10 ? "%.1f W" : "%.0f W", v)
         case .percent: return String(format: "%.0f%%", v)
@@ -47,7 +47,7 @@ struct Metric: Hashable, Identifiable {
     var id: String { key }
 
     func tint(for v: Double) -> Color {
-        if unit == .temperature { return temperatureColor(for: v) }
+        if unit == .temperature { return Temperature.color(for: v) }
         guard let warn, let hot else { return .primary }
         return v < warn ? .green : v < hot ? .orange : .red
     }
@@ -70,4 +70,36 @@ struct Metric: Hashable, Identifiable {
     static let memoryUsed = Metric(key: "mem.used", title: "Memory used", symbol: "memorychip", unit: .gigabytes)
     static let batteryCharge = Metric(key: "battery.charge", title: "Charge", symbol: "battery.75", unit: .percent)
     static let batteryPower = Metric(key: "battery.watts", title: "Battery power", symbol: "bolt.batteryblock", unit: .watts)
+}
+
+/// The average and peak of every metric from one refresh, keyed by `Metric.key`.
+struct MetricSnapshot: Equatable {
+    private(set) var average: [String: Double] = [:]
+    private(set) var peak: [String: Double] = [:]
+
+    init(summaries: [ComponentSummary] = [], fans: [FanReading] = [], power: PowerReading? = nil,
+         usage: UsageReading? = nil, memory: MemoryReading? = nil, battery: BatteryReading? = nil) {
+        for s in summaries {
+            average[s.component.rawValue] = s.average
+            peak[s.component.rawValue] = s.hottest
+        }
+        for f in fans { set(.fan(f.index), f.rpm) }
+        set(.systemPower, power?.system)
+        set(.cpuPower, power?.cpu)
+        set(.gpuPower, power?.gpu)
+        set(.anePower, power?.ane)
+        set(.dramPower, power?.dram)
+        set(.cpuUsage, usage?.cpu)
+        set(.gpuUsage, usage?.gpu)
+        set(.memoryUsed, memory?.usedGigabytes)
+        set(.batteryCharge, battery?.charge)
+        set(.batteryPower, battery?.watts)
+    }
+
+    /// Records a single instantaneous value, which is both the average and the peak.
+    private mutating func set(_ metric: Metric, _ value: Double?) {
+        guard let value else { return }
+        average[metric.key] = value
+        peak[metric.key] = value
+    }
 }

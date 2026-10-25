@@ -9,6 +9,11 @@ let package = Package(
             name: "TempMonitor",
             path: "Sources/TempMonitor",
             linkerSettings: [.linkedFramework("IOKit"), .linkedFramework("Metal"), .linkedLibrary("IOReport")]
-        )
+        ),
+        .testTarget(
+            name: "TempMonitorTests",
+            dependencies: ["TempMonitor"],
+            path: "Tests/TempMonitorTests"
+        ),
     ]
 )
