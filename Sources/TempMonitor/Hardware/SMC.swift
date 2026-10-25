@@ -1,9 +1,15 @@
 import Foundation
 import IOKit
 
+/// Anything that can read numeric SMC keys. `SMC` is the real one; tests use a dictionary.
+protocol SMCKeyReading {
+    /// Returns nil if the key doesn't exist.
+    func read(_ key: String) -> Double?
+}
+
 /// Read-only access to the System Management Controller (fans, system power).
 /// Uses the same AppleSMC user-client protocol as Stats and smcFanControl. No root required.
-final class SMC {
+final class SMC: SMCKeyReading {
     // Mirrors the C SMCKeyData_t struct (80 bytes). `padding` reproduces C's tail padding after keyInfo.
     private struct KeyData {
         struct Version { var major: UInt8 = 0, minor: UInt8 = 0, build: UInt8 = 0, reserved: UInt8 = 0, release: UInt16 = 0 }
@@ -44,9 +50,9 @@ final class SMC {
 
     /// Reads a numeric key, decoding the common SMC data types. Returns nil if the key doesn't exist.
     func read(_ key: String) -> Double? {
-        guard key.utf8.count == 4 else { return nil }
+        guard let code = Self.fourCharCode(key) else { return nil }
         var input = KeyData()
-        input.key = key.utf8.reduce(0) { $0 << 8 | UInt32($1) }
+        input.key = code
         input.data8 = Self.cmdGetKeyInfo
         guard let info = call(&input), info.result == 0 else { return nil }
 
@@ -56,7 +62,7 @@ final class SMC {
 
         let size = Int(info.keyInfo.dataSize)
         let bytes = withUnsafeBytes(of: out.bytes) { Array($0.prefix(size)) }
-        return Self.decode(bytes, type: info.keyInfo.dataType)
+        return Self.decode(bytes, type: Self.fourCharString(info.keyInfo.dataType))
     }
 
     private func call(_ input: inout KeyData) -> KeyData? {
@@ -67,9 +73,21 @@ final class SMC {
         return status == kIOReturnSuccess ? output : nil
     }
 
-    private static func decode(_ b: [UInt8], type: UInt32) -> Double? {
-        let typeName = String(bytes: withUnsafeBytes(of: type.bigEndian, Array.init), encoding: .ascii) ?? ""
-        switch typeName {
+    // MARK: - Encoding
+
+    /// Packs a four-character key such as "FNum" into a big-endian integer. Nil unless it's 4 bytes.
+    static func fourCharCode(_ key: String) -> UInt32? {
+        guard key.utf8.count == 4 else { return nil }
+        return key.utf8.reduce(0) { $0 << 8 | UInt32($1) }
+    }
+
+    static func fourCharString(_ code: UInt32) -> String {
+        String(bytes: withUnsafeBytes(of: code.bigEndian, Array.init), encoding: .ascii) ?? ""
+    }
+
+    /// Decodes a value of SMC data type `type` (e.g. "flt ", "sp78"). Nil for unknown or short data.
+    static func decode(_ b: [UInt8], type: String) -> Double? {
+        switch type {
         case "flt " where b.count >= 4:
             return Double(Float(bitPattern: UInt32(b[0]) | UInt32(b[1]) << 8 | UInt32(b[2]) << 16 | UInt32(b[3]) << 24))
         case "ui8 " where b.count >= 1:
@@ -88,7 +106,7 @@ final class SMC {
     }
 }
 
-struct FanReading: Identifiable {
+struct FanReading: Identifiable, Equatable {
     let index: Int
     let rpm: Double
     let min: Double
@@ -103,7 +121,7 @@ struct FanReading: Identifiable {
 }
 
 enum FanReader {
-    static func read(_ smc: SMC) -> [FanReading] {
+    static func read(_ smc: SMCKeyReading) -> [FanReading] {
         guard let count = smc.read("FNum"), count > 0 else { return [] }
         return (0..<Int(count)).compactMap { i in
             guard let rpm = smc.read("F\(i)Ac") else { return nil }
@@ -117,33 +135,34 @@ enum FanReader {
 /// the HID sensors in `SensorReader` with similar names are power-management chip temperatures.
 final class SMCTemperatures {
     // Known core sensor keys per chip family (as used by Stats). Only keys that exist are kept.
-    private static let cpuCandidates = [
+    static let cpuCandidates = [
         "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0T", "Tp0X", "Tp0b", "Tp0f", "Tp0j", // M1/M2
         "Tp1h", "Tp1t", "Tp1p", "Tp1l",                                                                 // M2
         "Te05", "Te0L", "Te0P", "Te0S", "Tf04", "Tf09", "Tf0A", "Tf0B", "Tf0D", "Tf0E",                 // M3
     ]
-    private static let gpuCandidates = [
+    static let gpuCandidates = [
         "Tg05", "Tg0D", "Tg0L", "Tg0T", "Tg0f", "Tg0j",                                                 // M1/M2
         "Tf14", "Tf18", "Tf19", "Tf1A", "Tf24", "Tf28", "Tf29", "Tf2A",                                 // M3
     ]
 
-    private let smc: SMC
+    private let smc: SMCKeyReading
     private let keys: [(key: String, component: Component)]
 
-    init?(smc: SMC) {
+    /// Nil if this Mac has none of the known core sensors.
+    init?(smc: SMCKeyReading) {
         self.smc = smc
-        let probe = { (k: String) in (smc.read(k) ?? 0) > 0 }
-        keys = Self.cpuCandidates.filter(probe).map { ($0, .cpu) } + Self.gpuCandidates.filter(probe).map { ($0, .gpu) }
+        let exists = { (key: String) in (smc.read(key) ?? 0) > 0 }
+        keys = Self.cpuCandidates.filter(exists).map { ($0, .cpu) } + Self.gpuCandidates.filter(exists).map { ($0, .gpu) }
         if keys.isEmpty { return nil }
     }
 
     func read() -> [Reading] {
         var counts: [Component: Int] = [:]
-        return keys.compactMap { k in
-            guard let v = smc.read(k.key), v > 0, v < 150 else { return nil }
-            counts[k.component, default: 0] += 1
-            let name = "\(k.component.title) core \(counts[k.component]!)"
-            return Reading(id: "smc." + k.key, raw: k.key, name: name, component: k.component, celsius: v)
+        return keys.compactMap { key, component in
+            guard let celsius = smc.read(key), Reading.isPlausible(celsius) else { return nil }
+            counts[component, default: 0] += 1
+            return Reading(id: "smc." + key, raw: key, name: "\(component.title) core \(counts[component]!)",
+                           component: component, celsius: celsius)
         }
     }
 }

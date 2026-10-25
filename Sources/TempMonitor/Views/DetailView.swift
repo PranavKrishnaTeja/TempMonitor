@@ -7,7 +7,7 @@ struct DetailView: View {
     let metric: Metric
     let onBack: () -> Void
 
-    @AppStorage("useFahrenheit") private var useFahrenheit = false
+    @AppStorage(SettingsKey.useFahrenheit) private var useFahrenheit = false
     @State private var range: HistoryRange = .hour
     @State private var hovered: HistoryPoint?
 
@@ -16,24 +16,11 @@ struct DetailView: View {
 
     var body: some View {
         let points = store.history.series(key: metric.key, range: range)
-        let peak = points.max { $0.max < $1.max }
-        let average = points.isEmpty ? nil : points.map(\.avg).reduce(0, +) / Double(points.count)
+        let stats = SeriesStats(points)
         let current = store.latest[metric.key]
 
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button(action: onBack) {
-                    Label("Back", systemImage: "chevron.left")
-                }
-                .buttonStyle(.borderless)
-                Spacer()
-                Image(systemName: metric.symbol)
-                Text(metric.title).font(.headline)
-                Spacer()
-                Text(current.map(format) ?? "--")
-                    .font(.system(.title3, design: .monospaced))
-                    .foregroundStyle(current.map { metric.tint(for: $0) } ?? .secondary)
-            }
+            header(current: current)
 
             Picker("", selection: $range) {
                 ForEach(HistoryRange.allCases) { Text($0.rawValue).tag($0) }
@@ -41,24 +28,7 @@ struct DetailView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            HStack {
-                if let h = hovered {
-                    Text(h.t, format: range == .week ? .dateTime.weekday().hour().minute() : .dateTime.hour().minute().second())
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    legendDot(avgColor)
-                    Text("avg \(format(h.avg))")
-                    legendDot(peakColor)
-                    Text("peak \(format(h.max))")
-                } else {
-                    legendDot(avgColor)
-                    Text("Average")
-                    legendDot(peakColor)
-                    Text(metric.peakLabel)
-                    Spacer()
-                }
-            }
-            .font(.caption)
+            legend.font(.caption)
 
             if points.isEmpty {
                 Text("No data yet for this range.")
@@ -70,17 +40,50 @@ struct DetailView: View {
             }
 
             HStack {
-                stat("Now", current.map(format) ?? "--")
+                stat("Now", current.map(format))
                 Spacer()
-                stat("Average", average.map(format) ?? "--")
+                stat("Average", stats.average.map(format))
                 Spacer()
-                stat("Peak", peak.map { format($0.max) } ?? "--",
-                     detail: peak.map { $0.t.formatted(range == .week ? .dateTime.weekday().hour().minute() : .dateTime.hour().minute()) })
+                stat("Peak", stats.peak.map { format($0.max) },
+                     detail: stats.peak.map { $0.t.formatted(range == .week ? .dateTime.weekday().hour().minute() : .dateTime.hour().minute()) })
             }
 
             Text("History is kept for 7 days at 1-minute resolution.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private func header(current: Double?) -> some View {
+        HStack {
+            BackButton(action: onBack)
+            Spacer()
+            Image(systemName: metric.symbol)
+            Text(metric.title).font(.headline)
+            Spacer()
+            Text(current.map(format) ?? MenuBarMode.placeholder)
+                .font(.system(.title3, design: .monospaced))
+                .foregroundStyle(current.map { metric.tint(for: $0) } ?? .secondary)
+        }
+    }
+
+    @ViewBuilder private var legend: some View {
+        HStack {
+            if let h = hovered {
+                Text(h.t, format: range == .week ? .dateTime.weekday().hour().minute() : .dateTime.hour().minute().second())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                legendDot(avgColor)
+                Text("avg \(format(h.avg))")
+                legendDot(peakColor)
+                Text("peak \(format(h.max))")
+            } else {
+                legendDot(avgColor)
+                Text("Average")
+                legendDot(peakColor)
+                Text(metric.peakLabel)
+                Spacer()
+            }
         }
     }
 
@@ -150,11 +153,7 @@ struct DetailView: View {
         Circle().fill(color).frame(width: 7, height: 7)
     }
 
-    private func stat(_ title: String, _ value: String, detail: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.system(.body, design: .monospaced))
-            if let detail { Text(detail).font(.caption2).foregroundStyle(.secondary) }
-        }
+    private func stat(_ title: String, _ value: String?, detail: String? = nil) -> some View {
+        StatView(title: title, value: value, detail: detail, valueFont: .system(.body, design: .monospaced))
     }
 }

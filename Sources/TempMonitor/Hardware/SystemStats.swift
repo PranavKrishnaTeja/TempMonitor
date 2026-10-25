@@ -1,18 +1,40 @@
 import Foundation
 import IOKit
 
-struct UsageReading {
+struct UsageReading: Equatable {
     var cpu: Double              // 0...100, all cores
     var performanceCores: Double
     var efficiencyCores: Double
     var gpu: Double?
+
+    /// Per-core busy percentage from two snapshots of cumulative CPU ticks (`CPU_STATE_*` order).
+    /// On Apple Silicon the first `efficiencyCount` cores are the efficiency cores.
+    /// Nil when the snapshots have different core counts.
+    static func from(ticks: [[UInt32]], previous: [[UInt32]], efficiencyCount: Int, gpu: Double?) -> UsageReading? {
+        guard !ticks.isEmpty, ticks.count == previous.count else { return nil }
+        let perCore = zip(ticks, previous).map { now, before in
+            let d = zip(now, before).map { Double($0 &- $1) }
+            let busy = d[Int(CPU_STATE_USER)] + d[Int(CPU_STATE_SYSTEM)] + d[Int(CPU_STATE_NICE)]
+            let total = busy + d[Int(CPU_STATE_IDLE)]
+            return total > 0 ? busy / total * 100 : 0
+        }
+        let split = min(efficiencyCount, perCore.count)
+        return UsageReading(cpu: perCore.mean ?? 0,
+                            performanceCores: perCore[split...].mean ?? 0,
+                            efficiencyCores: perCore[..<split].mean ?? 0,
+                            gpu: gpu)
+    }
 }
 
-struct MemoryReading {
+struct MemoryReading: Equatable {
     var used: Double             // bytes: app + wired + compressed (matches Activity Monitor)
     var total: Double
     var pressure: Double         // 0...100
     var swapUsed: Double         // bytes
+
+    var usedGigabytes: Double { used / 1e9 }
+    var totalGigabytes: Double { total / 1e9 }
+    var swapGigabytes: Double { swapUsed / 1e9 }
 }
 
 /// CPU usage from per-core tick deltas, plus GPU usage, memory and thermal state.
@@ -21,24 +43,12 @@ final class SystemStatsReader {
     /// On Apple Silicon the efficiency cores are numbered first (perflevel1).
     private let efficiencyCount = SystemStatsReader.sysctlInt("hw.perflevel1.logicalcpu") ?? 0
 
+    /// Usage since the previous call (nil on the first call).
     func readUsage() -> UsageReading? {
         guard let ticks = Self.cpuTicks() else { return nil }
         defer { previousTicks = ticks }
-        guard previousTicks.count == ticks.count else { return nil }
-
-        var perCore: [Double] = []
-        for (now, before) in zip(ticks, previousTicks) {
-            let d = zip(now, before).map { Double($0 &- $1) }
-            let busy = d[Int(CPU_STATE_USER)] + d[Int(CPU_STATE_SYSTEM)] + d[Int(CPU_STATE_NICE)]
-            let total = busy + d[Int(CPU_STATE_IDLE)]
-            perCore.append(total > 0 ? busy / total * 100 : 0)
-        }
-        func mean(_ xs: ArraySlice<Double>) -> Double { xs.isEmpty ? 0 : xs.reduce(0, +) / Double(xs.count) }
-        let split = min(efficiencyCount, perCore.count)
-        return UsageReading(cpu: mean(perCore[...]),
-                            performanceCores: mean(perCore[split...]),
-                            efficiencyCores: mean(perCore[..<split]),
-                            gpu: Self.gpuUtilization())
+        return UsageReading.from(ticks: ticks, previous: previousTicks, efficiencyCount: efficiencyCount,
+                                 gpu: Self.gpuUtilization())
     }
 
     func readMemory() -> MemoryReading? {
@@ -59,9 +69,10 @@ final class SystemStatsReader {
         var swapSize = MemoryLayout<xsw_usage>.size
         sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0)
 
-        let level = Self.sysctlInt("kern.memorystatus_level") ?? 100
+        // memorystatus_level is the percentage of memory still available.
+        let available = Self.sysctlInt("kern.memorystatus_level") ?? 100
         return MemoryReading(used: used, total: Double(ProcessInfo.processInfo.physicalMemory),
-                             pressure: Double(100 - level), swapUsed: Double(swap.xsu_used))
+                             pressure: Double(100 - available), swapUsed: Double(swap.xsu_used))
     }
 
     private static func cpuTicks() -> [[UInt32]]? {
@@ -110,4 +121,7 @@ extension ProcessInfo.ThermalState {
         @unknown default: return "Unknown"
         }
     }
+
+    /// Anything above nominal means macOS may be slowing the chip down to cool it.
+    var mayBeThrottling: Bool { self != .nominal }
 }
